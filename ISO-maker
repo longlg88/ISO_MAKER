@@ -1,0 +1,545 @@
+#!/bin/bash
+
+## Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+## Global variables
+fileDATE=`date "+%Y%m%d_%H%M%S"`
+DATE=`date "+%Y %m/%d %H:%M:%S"`
+CONFIG_DIR="$PWD/config"
+
+## Global arrays
+declare -a selected_version;
+declare -a selected_kernel;
+declare -a selected_script;
+declare -a selected_pkg;
+declare -a temp_selected_pkg;
+
+## Global path
+ISO_MAKER_HOME="$HOME/ProLinux_installer"
+SCRIPT_DIR="$ISO_MAKER_HOME/script"
+MAJOR=`grep -r "^MAJOR" $CONFIG_DIR | awk -F= '{print $2}'`
+MINOR=`grep -r "^MINOR" $CONFIG_DIR | awk -F= '{print $2}'`
+PATCH=`grep -r "^PATCH" $CONFIG_DIR | awk -F= '{print $2}'`
+
+## Dynamic path
+set_path(){
+	ISO_DIR="$ISO_MAKER_HOME/iso_file"
+	MODE_MANUAL_DIR="$ISO_MAKER_HOME/$binary_version/manual"
+	MODE_AUTO_DIR="$ISO_MAKER_HOME/$binary_version/auto-install"
+
+	GPG_DIR="$ISO_MAKER_HOME/$binary_version/GPG_ProLinux"
+	KERNEL_DIR="$ISO_MAKER_HOME/$binary_version/kernel"
+	VERSION_DIR="$ISO_MAKER_HOME/$binary_version/ProLinux-Version/$VERSION"
+
+	BACKUP_DIR="$VERSION_DIR/backup"
+	PACKAGE_DIR="$VERSION_DIR/package"
+	CD_IMAGE="$VERSION_DIR/ISO_src"
+	APT_DIR="$VERSION_DIR/apt-ftparchive"
+	INDICES_DIR="$VERSION_DIR/indices"
+	CD_KERNEL="$CD_IMAGE/pool/main/t/tmax-kernel"
+	CD_SCRIPT="$CD_IMAGE/preseed/script"
+	CD_PACKAGE="$CD_IMAGE/pool/extras"
+}
+
+## ISO-maker help menu
+helpmenu(){
+echo -e $YELLOW"***ProLinux Installer ISO maker tool***"$NC
+cat <<-END
+Usage: ./ISO-maker [OPTION] ...
+This will generate ProLinux Installer ISO file as you wish.
+
+Without any option, you can choose manually...
+
+OPTION:
+    -h, --help          					Display this message
+    -v, --version       					ISO-maker version
+    -c FILE_NAME, --config=FILE_NAME		ISO-maker config file input
+
+Available ProLinux VERSION:
+    4.0       ProLinux version 4.0.x (artful)
+    4.1       ProLinux version 4.1.x (bionic)
+    4.2       ProLinux version 4.2.x (bionic) -- latest
+END
+}
+
+## ISO-maker version info
+version_info(){
+	declare -a temp_config_list
+    echo -e "ISO-maker $MAJOR.$MINOR.$PATCH"
+    if [ -d $CONFIG_DIR ]; then
+		CONFIG_FILE_LIST=`ls config | awk -F" " '{print "  | " $1}'`
+		echo -e ""
+        echo -e "  config file list"
+		echo -e "  ======================="
+		echo -e "$CONFIG_FILE_LIST"
+		echo -e "  ======================="
+        echo -e "  excutable location = $PWD"
+    else
+        echo -e "  config file = There is no config file.. !! Check if there is config directory & file"
+        exit 1
+    fi
+}
+
+# directory position save and move to directory
+pushd(){
+    command pushd "$@" > /dev/null
+}
+
+# move to original directory position
+popd(){
+    command popd "$@" > /dev/null
+}
+
+# Caution
+caution(){
+    echo -e "There is no default values in config. -h | --help option will be helpful."
+    exit 1
+}
+
+# ========================================================================
+
+########################### working functions
+## generate log dir
+gen_log_dir(){
+	log_dir="$PWD/.log"
+	if [ ! -d "$log_dir" ]; then
+		mkdir $log_dir
+	fi
+}
+
+## check ProLinux version
+check_pl_version(){
+	
+	pl_iso_name=`grep -r "^iso_name" $1 | awk -F= '{print $2}'`
+	pl_iso_version=`grep -r "^iso_version" $1 | awk -F= '{print $2}'`
+	
+	if [ ! $pl_iso_name -o ! $pl_iso_version ]; then
+		echo -e $RED"Check iso_name & iso_version in $1 ...!"$NC
+		exit 1
+	else
+        echo -e $GREEN"iso_name ======> [ "$pl_iso_name" ]"$NC
+        echo -e $GREEN"iso_version ======> [ "$pl_iso_version" ]"$NC
+		VERSION=$pl_iso_name"-"$pl_iso_version
+    fi
+}
+
+check_missing_part(){
+	if [ $3 = "script" ]; then
+		for f in `find script -name "*.sh" | awk -F / '{print $2}' | sort`
+    	do
+        	list_files=("${list_files[@]}" $f);
+    	done
+	elif [ $3 = "pkg" ]; then
+		pushd $PACKAGE_DIR 2>/dev/null;
+		for f in `ls -d */ -1 | sed 's/.$//' | sort`
+		do
+			list_files=("${list_files[@]}" $f)
+		done
+		popd;
+	fi
+
+    count_selected=`grep -r "^$2" $1 | awk -F= '{print $2}' | awk -F: '{print NF}'`
+	if [ ! $list_files ]; then
+		echo -e $RED"Check config in '$2' part... There is no script in here"$NC
+        exit 1
+ 	else
+	    for (( cut_cnt=1; cut_cnt<=$count_selected; cut_cnt++ ))
+    	do  
+			temp_cnt=0
+        	select_files=`grep -r "^$2" $1 | awk -F= '{print $2}' | cut -d: -f"$cut_cnt"`
+        	for files in ${list_files[@]}
+        	do  
+            	if [ $files != $select_files ]; then
+                	temp_cnt=$((temp_cnt+1))
+            	fi
+        	done 
+        	if [ $temp_cnt -eq ${#list_files[@]} ]; then
+            	echo -e $RED"Check config in '$2' part... This [$select_files] is not in $3 directory"$NC
+            	exit 1
+        	fi
+			if [ $3 = "script" ]; then
+	        	CHECK_SCRIPT=("${CHECK_SCRIPT[@]}" $select_files)
+			elif [ $3 = "pkg" ]; then
+				CHECK_PKG=("${CHECK_PKG[@]}" $select_files)
+			fi
+    	done
+	fi
+}
+
+### check conditions
+## 1. binaries: GPG_KEY / iso_file directories / kernel / ProLinux-Version / script directories
+## 2. config check
+
+check_conditions(){
+	set_path
+	# check between config file & script that is in there.
+	script_dir="$PWD/script"
+	# Check if there is binaries
+	if [ ! -d $GPG_DIR ]; then
+		gpg_isthere=1
+		echo -e $RED"'GPG_ProLinux' directories are not here"$NC
+	else
+		gpg_isthere=0
+	fi
+	if [ ! -d $KERNEL_DIR ]; then
+        kernel_isthere=1
+		echo -e $RED"'kernel' directories are not here"$NC
+    else
+        kernel_isthere=0
+    fi
+	if [ ! -d $VERSION_DIR ]; then
+        plb_isthere=1
+		echo -e $RED"'ProLinux-Version' directories are not here"$NC
+    else
+        plb_isthere=0
+    fi
+	echo -e
+	echo -e
+	if [ $gpg_isthere -eq 0 -a $kernel_isthere -eq 0 -a $plb_isthere -eq 0 ]; then
+		echo -e $GREEN"Checking binaries are all done!!"$NC
+	else
+		if [ $binary_address ]; then
+			if [ -d $ISO_MAKER_HOME/$binary_version ]; then		
+				rm -rf $ISO_MAKER_HOME/$binary_version
+				git clone $binary_address/$binary_version
+				echo -e $GREEN"Checking binaries are all done!!"$NC
+			else
+				git clone $binary_address/$binary_version
+				echo -e $GREEN"Checking binaries are all done!!"$NC
+			fi
+		else
+			echo -e $RED"Contact with ProLinux developer team...!"$NC
+			exit 1
+		fi
+	fi
+
+	# Check mode (manual / auto-install / ...)
+	echo -e $GREEN"Checking mode start!!"$NC
+	sleep 1
+	pl_mode=`grep -r "^mode" $1 | awk -F= '{print $2}'`
+	if [ $pl_mode = "manual" ]; then
+		cp -r $MODE_MANUAL_DIR/* $CD_IMAGE
+		CHECK_MODE="manual"
+		echo -e $GREEN"Checking mode finish..!"$NC
+	elif [ $pl_mode = "auto" ]; then
+		CHECK_MODE="auto"
+		cp -r $MODE_AUTO_DIR/* $CD_IMAGE
+		echo -e $GREEN"Checking mode finish..!"$NC
+	else
+		echo -e $RED"Config about 'mode' section is wrong... Check it out config directories"$NC
+		exit 1
+	fi
+
+
+	# Check if there is dir
+	if [ ! -d $ISO_DIR ]; then
+		echo -e $RED"'iso_file' directories are not here. So make it 'iso_file' dir"$NC
+		mkdir $ISO_DIR
+	fi
+
+	# Check config files
+	pl_kernel_matching=`grep -r "^iso_version" $1 | awk -F= '{print $2}'`
+	pl_use_script=`grep -r "^use_script" $1 | awk -F= '{print $2}'`
+	pl_pkg_list=`grep -r "^pkg_list" $1 | awk -F= '{print $2}'`
+	pl_label=`grep -r "^label" $1 | awk -F= '{print $2}'`
+	pl_dist=`grep -r "^dist" $1 | awk -F= '{print $2}'`
+	
+	pl_sc_str="use_script"
+	pl_pkg_str="pkg_list"
+
+	if [[ $pl_kernel_matching =~ "v4.2.0" ]]; then
+		CHECK_KERNEL="4.18.10-3"
+	elif [[ $pl_kernel_matching =~ "v4.1.1" ]]; then
+		CHECK_KERNEL="4.18.4-3"
+	elif [[ $pl_kernel_matching =~ "v4.1.0" ]]; then
+		CHECK_KERNEL="4.15.10-3"
+	elif [[ $pl_kernel_matching =~ "v4.0.0" ]]; then
+		CHECK_KERNEL="4.13.0-41"
+	else
+		echo -e $RED"The iso_version is wrong.. Check config files"$NC
+		exit 1
+	fi
+
+	if [ $pl_use_script ]; then
+		# shell script in script dir
+		check_missing_part $1 $pl_sc_str "script"
+		
+		echo -e $GREEN"=== Script [ \c"$NC
+		echo -e $GREEN"${CHECK_SCRIPT[@]} ] has been selected ==="$NC
+	else
+		CHECK_SCRIPT="no Scripts"
+	fi
+	
+	if [ $pl_pkg_list ]; then
+		check_missing_part $1 $pl_pkg_str "pkg"
+		echo -e $GREEN"=== Package [ \c"$NC
+		echo -e $GREEN"${CHECK_PKG[@]} ] has been selected ==="$NC
+	else
+		CHECK_PKG="no Packages"
+	fi
+
+	if [ ! $pl_label ]; then
+		CHECK_LABEL="no Label"
+	else
+		CHECK_LABEL=$pl_label
+	fi
+
+	if [ ! $pl_dist ]; then
+		echo -e $RED"There is no codename in config files"$NC
+		exit 1
+	else
+		CHECK_DIST=$pl_dist
+	fi
+
+	echo -e $GREEN"=== Mode [ $CHECK_MODE ] has been selected"$NC
+	echo -e $GREEN"=== Kernel [ $CHECK_KERNEL ] has been selected"$NC
+	echo -e $GREEN"=== Label [ $CHECK_LABEL ] has been selected"$NC
+	echo -e $GREEN"=== DIST [ $CHECK_DIST ] has been selected"$NC
+}
+
+# Copy kernel to ISO CDS image
+copy_kernel(){
+	echo -e $GREEN"Copy kernel start..!"$NC
+	sleep 1
+	if [ ! -d "$CD_KERNEL/$CHECK_KERNEL" ]; then
+        [ -z "$CD_KERNEL" ] && echo -e $RED"[CD_KERNEL: NOT FOUND]" && exit 1 || rm -r $CD_KERNEL/* && cp -r $KERNEL_DIR/$CHECK_KERNEL $CD_KERNEL/
+    fi
+	echo -e $GREEN"Copy Kernel Success"$NC
+}
+
+# Copy script to ISO CD image
+copy_script(){
+	echo -e $GREEN"Copy scripts start..!"$NC
+	sleep 1
+	rm -rf $CD_SCRIPT/*.sh
+    if ! [[ $CHECK_SCRIPT =~ "no Scripts" ]]; then
+		for sh in "${CHECK_SCRIPT[@]}"
+    	do
+			echo -e >> $CD_IMAGE/preseed/late_cmd.sh
+			echo '#Additional script' >> $CD_IMAGE/preseed/late_cmd.sh
+        	cp $SCRIPT_DIR/$sh $CD_SCRIPT/
+        	#echo "bash /.script/$sh" >> $CD_IMAGE/preseed/late_cmd.sh;
+    	done
+		echo -e $GREEN"Copy Script Success"$NC
+	else
+		echo -e $GREEN"No scripts in here..!"$NC
+	fi
+}
+
+# Copy packages to ISO CD image
+copy_pkg(){
+	echo -e $GREEN"Copy packages start..!"$NC
+	sleep 1
+	if [[ ${CHECK_PKG[@]} =~ "no Packages" ]]; then
+		echo -e $GREEN"No packages selected..!"$NC
+	else
+	    pushd $CD_IMAGE/pool/main/t/tasksel;
+    	dpkg-deb -R tasksel-data*.deb tmp;
+    	for pkg in "${CHECK_PKG[@]}"
+    	do
+        	cp -r $PACKAGE_DIR/$pkg $CD_PACKAGE/
+        	cp $PACKAGE_DIR/$pkg/${pkg}.desc tmp/usr/share/tasksel/descs/
+    	done
+    	dpkg-deb -b tmp/ . > /dev/null
+    	rm -r tmp
+    	popd
+		echo -e $GREEN"Copy package Success"$NC
+	fi
+}
+
+# update main pool
+update_main_pool(){
+    echo "+++++++++++++Update main Packages+++++++++++++";
+    pushd $CD_IMAGE;
+    apt-ftparchive packages pool/main > dists/stable/main/binary-amd64/Packages
+    gzip -c dists/stable/main/binary-amd64/Packages | tee dists/stable/main/binary-amd64/Packages.gz > /dev/null
+    ls -alF dists/stable/main/binary-amd64/
+    echo "Done!"
+    popd
+}
+
+# update extra pool like prozone / mono
+update_extras_pool(){
+    echo "++++++++++Update extras Packages+++++++++++"
+    pushd $CD_IMAGE;
+    mkdir -p dists/stable/extras/binary-amd64
+    apt-ftparchive packages pool/extras > dists/stable/extras/binary-amd64/Packages
+    gzip -c dists/stable/extras/binary-amd64/Packages | tee dists/stable/extras/binary-amd64/Packages.gz > /dev/null
+    ls -alF dists/stable/extras/binary-amd64/
+    echo "Done!"
+    popd
+}
+
+#update release
+update_release(){
+    echo "+++++++++++++++Update Release files++++++++++++"
+    APTCONF=$APT_DIR/release.conf
+    GPG_PUBLIC_KEY="4538E6ECBB3A9FE54D7A25978F927DE18AB9CE0C"
+    GPG_PRIVATE_KEY="tmax"
+    GPG_VERSION=`gpg --version | head -1 | cut -d" " -f3 | cut -d"." -f1`;
+
+    pushd $CD_IMAGE
+
+    tmp=`echo $CD_IMAGE | sed 's.\/.\\\/.g'`;
+    tmp1=`echo $INDICES_DIR | sed 's.\/.\\\/.g'`;
+    
+	## tmp / tmp1 
+
+	sed -i -e "s/#ArchiveDIR/$tmp/g;s/#IndicesDIR/$tmp1/g" $APT_DIR/apt-ftparchive-*.conf
+    apt-ftparchive -c $APTCONF generate $APT_DIR/apt-ftparchive-deb.conf
+    apt-ftparchive -c $APTCONF generate $APT_DIR/apt-ftparchive-udeb.conf
+    apt-ftparchive -c $APTCONF generate $APT_DIR/apt-ftparchive-extras.conf
+    apt-ftparchive -c $APTCONF release $CD_IMAGE/dists/$CHECK_DIST > $CD_IMAGE/dists/$CHECK_DIST/Release
+
+    rm $CD_IMAGE/dists/$CHECK_DIST/Release.gpg 2> /dev/null
+
+    echo -e
+    # --pinentry-mode is not supported in gpg v1.x
+    if [ "$GPG_VERSION" == "1" ]; then
+        # check if ProLinux public and private key exists
+        if ! gpg --list-key "ProLinux" > /dev/null; then
+            echo "******Import ProLinux Public and Private key******"
+            gpg --import $GPG_DIR/ProLinux_public.key
+            gpg --passphrase $GPG_PRIVATE_KEY --allow-secret-key-import \ 
+                --import $GPG_DIR/ProLinux_private.key
+            echo "***************************************************"
+        fi
+        gpg --passphrase $GPG_PRIVATE_KEY --default-key "$GPG_PUBLIC_KEY" \ 
+            --output $CD_IMAGE/dists/$CHECK_DIST/Release.gpg -ba $CD_IMAGE/dists/$CHECK_DIST/Release
+
+    else #GPG version 2.x.x
+        # check if ProLinux public and private key exists
+        if ! gpg --list-key "ProLinux" > /dev/null; then
+            echo "******Import ProLinux Public and Private key******"
+            gpg --import $GPG_DIR/ProLinux_public.key
+            gpg --pinentry-mode loopback --passphrase $GPG_PRIVATE_KEY --allow-secret-key-import \
+                --import $GPG_DIR/ProLinux_private.key
+            echo "***************************************************"
+        fi
+        gpg --pinentry-mode loopback --passphrase $GPG_PRIVATE_KEY --default-key "$GPG_PUBLIC_KEY" \
+            --output $CD_IMAGE/dists/$CHECK_DIST/Release.gpg -ba $CD_IMAGE/dists/$CHECK_DIST/Release
+    fi
+	find . -type f -print0 | xargs -0 md5sum > md5sum.txt
+    sed -i '/md5sum.txt/d' md5sum.txt
+    sed -i '/isolinux/d' md5sum.txt
+
+
+    ls -alF $CD_IMAGE/dists/$CHECK_DIST/
+    popd
+
+    echo "Done!"
+
+}
+
+# generate iso
+generate_iso(){
+	ISO_NAME="${VERSION}_${CHECK_LABEL}_${MAJOR}_${MINOR}_${PATCH}.ISO"
+	echo -e $GREEN"=== ISO filename: $YELLOW $ISO_NAME "$NC
+	echo -e $GREEN"=== ISO file location: $ISO_DIR"$NC
+	
+	ISO_OUTPUT=$ISO_DIR/$ISO_NAME
+
+    if ! command -v mkisofs > /dev/null; then
+        sudo apt-get install -y genisoimage > /dev/null;
+    fi
+    mkisofs -b isolinux/isolinux.bin -J -R -l -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot \
+        -e boot/grub/efi.img -no-emul-boot -graft-points -V "ProLinux Installation CD" \
+        -o $ISO_OUTPUT $CD_IMAGE/ 
+
+    if ! command -v isohybrid > /dev/null; then
+        sudo apt-get install -y syslinux-utils > /dev/null;
+    fi
+    isohybrid -h 128 --uefi $ISO_OUTPUT
+
+    #exit 0;
+}
+
+## Main function
+main(){
+	if [[ $1 =~ ".cfg" ]]; then
+		CONFIG_FILE="$ISO_MAKER_HOME/$1"
+	else
+		echo -e $RED"Check config directory and config file name... It must be [file name].cfg"$NC
+		exit 1
+	fi
+
+	echo -e $GREEN"=== $DATE ==="$NC
+    echo -e $GREEN"Ready!!"$NC
+
+	## start make ISO~!
+	check_pl_version $CONFIG_FILE
+	check_conditions $CONFIG_FILE
+	copy_kernel
+	copy_script
+	copy_pkg
+	update_main_pool
+	update_extras_pool
+	update_release
+	generate_iso $CONFIG_FILE
+
+
+
+	## control log files
+	# [ctrl+v] [Enter]
+	sed -i 's/\[0;32m//g' .log/generate_log_$fileDATE
+	sed -i 's/\[1;33m//g' .log/generate_log_$fileDATE
+	sed -i 's/\[0m//g' .log/generate_log_$fileDATE
+}
+
+
+## Main loop
+while [ $# -ne 0 ]
+do
+    case "$1" in
+        --help | -h)
+            helpmenu;
+            exit
+            ;;
+        --version | -v)
+            version_info;
+            exit
+            ;;
+		-c)
+			if [ -f "$HOME/ProLinux_installer/.config" ]; then
+				binary_version=`grep -r "^prolinux-binary" $HOME/ProLinux_installer/.config | awk -F= '{print $2}'`
+				binary_address=`grep -r "^binary-address" $HOME/ProLinux_installer/.config | awk -F= '{print $2}'`
+				gen_log_dir
+				main $2 | tee .log/generate_log_$fileDATE 2>&1
+				exit 0
+			else
+				echo -e $RED"Contact with ProLinux developer team...!"$NC
+				exit 1
+			fi
+			;;
+        *)
+			## another config file option
+			if [[ $1 =~ "--config=" ]]; then
+				if [ -f "$HOME/ProLinux_installer/.config" ]; then
+					binary_version=`grep -r "^prolinux-binary" $HOME/ProLinux_installer/.config | awk -F= '{print $2}'`
+					binary_address=`grep -r "^binary-address" $HOME/ProLinux_installer/.config | awk -F= '{print $2}'`
+					file_name=`echo $1 | cut -d\= -f2 `
+					gen_log_dir
+					main $file_name | tee .log/generate_log_$fileDATE 2>&1
+					exit 0
+				else
+					echo -e $RED"Contact with ProLinux developer team...!"$NC
+					exit 1
+				fi
+			else
+	            echo "Wrong parameter enter... use -h, --help option to read help"
+    	        exit 1
+			fi
+            ;;
+    esac
+    shift
+done
+
+if [ $# -eq 0 ]; then
+	helpmenu
+fi
