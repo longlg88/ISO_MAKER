@@ -58,7 +58,7 @@ Without any option, you can choose manually...
 OPTION:
     -h, --help          					Display this message
     -v, --version       					ISO-maker version
-    -c FILE_NAME, --config=FILE_NAME		ISO-maker config file input
+    -c config/FILE_NAME, --config=config/FILE_NAME		ISO-maker config file input
 
 Available ProLinux VERSION:
     4.0       ProLinux version 4.0.x (artful)

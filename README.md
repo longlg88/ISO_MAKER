@@ -4,4 +4,4 @@
 
 
 #### To generate ISO file:  
-###### $ sudo ./ISO-maker -c [config file name], --config=[config file name]
+###### $ sudo ./ISO-maker -c config/[config file name], --config=config/[config file name]
